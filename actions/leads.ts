@@ -2,12 +2,25 @@
 
 import { revalidatePath } from "next/cache";
 
+import {
+  makeLeadKey,
+  scrapeRestaurantsByArea,
+  type AreaRestaurantCandidate,
+} from "@/lib/maps/googleMaps";
 import { createClient } from "@/lib/supabase/server";
 import { leadSchema, type LeadInput } from "@/lib/validations/lead";
 
 export interface ActionResult {
   success: boolean;
   error?: string;
+}
+
+export interface SearchAreaActionResult extends ActionResult {
+  data?: AreaRestaurantCandidate[];
+}
+
+export interface ImportAreaActionResult extends ActionResult {
+  importedCount?: number;
 }
 
 function mapLeadError(message: string, code?: string) {
@@ -199,4 +212,126 @@ export async function setMeetingSchedule(
   revalidatePath("/");
   revalidatePath(`/leads/${leadId}`);
   return { success: true };
+}
+
+export async function searchAreaRestaurants(input: {
+  country: string;
+  state: string;
+  city: string;
+  query?: string;
+  maxResults?: number;
+}): Promise<SearchAreaActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+
+  if (authError || !user) {
+    return { success: false, error: "You must be signed in to search restaurants" };
+  }
+
+  if (!input.country || !input.state || !input.city) {
+    return { success: false, error: "Location is required" };
+  }
+
+  const maxResults = Math.min(Math.max(input.maxResults ?? 25, 5), 100);
+
+  try {
+    const { data: existingLeads, error: existingError } = await supabase
+      .from("restaurants")
+      .select("name, phone_number")
+      .eq("country", input.country)
+      .eq("state", input.state)
+      .eq("city", input.city);
+
+    if (existingError) {
+      return { success: false, error: mapLeadError(existingError.message, existingError.code) };
+    }
+
+    const excludeKeys = (existingLeads ?? []).map((lead) =>
+      makeLeadKey(lead.name ?? "", lead.phone_number),
+    );
+
+    const data = await scrapeRestaurantsByArea({
+      country: input.country,
+      state: input.state,
+      city: input.city,
+      query: input.query,
+      maxResults,
+      excludeKeys,
+    });
+
+    if (data.length === 0) {
+      return {
+        success: false,
+        error:
+          "No new restaurants found for this area. Existing leads were skipped. Try changing query or nearby city.",
+      };
+    }
+
+    return { success: true, data };
+  } catch {
+    return {
+      success: false,
+      error:
+        "Unable to fetch restaurants for this area right now. Try again in a moment.",
+    };
+  }
+}
+
+export async function importAreaRestaurantLeads(input: {
+  country: string;
+  state: string;
+  city: string;
+  restaurants: AreaRestaurantCandidate[];
+}): Promise<ImportAreaActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+
+  if (authError || !user) {
+    return { success: false, error: "You must be signed in to import leads" };
+  }
+
+  const profileResult = await ensureProfile(supabase, user);
+  if (!profileResult.success) {
+    return profileResult;
+  }
+
+  if (!input.restaurants || input.restaurants.length === 0) {
+    return { success: false, error: "Select at least one restaurant to import" };
+  }
+
+  const rows = input.restaurants
+    .filter((item) => item.name && item.name.trim().length > 0)
+    .map((item) => ({
+      name: item.name.trim(),
+      phone_number: item.phone_number,
+      email: null,
+      country: input.country,
+      state: input.state,
+      city: input.city,
+      demo_sent: false,
+      brochure_sent: false,
+      meeting_scheduled_at: null,
+      lead_status: null,
+      created_by: user.id,
+    }));
+
+  if (rows.length === 0) {
+    return { success: false, error: "No valid restaurants to import" };
+  }
+
+  const { error } = await supabase.from("restaurants").insert(rows);
+
+  if (error) {
+    return { success: false, error: mapLeadError(error.message, error.code) };
+  }
+
+  revalidatePath("/");
+  revalidatePath("/leads/new/details");
+  return { success: true, importedCount: rows.length };
 }
