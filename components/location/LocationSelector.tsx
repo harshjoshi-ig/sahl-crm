@@ -1,8 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Check, ChevronsUpDown } from "lucide-react";
-import { City, Country, State } from "country-state-city";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -26,6 +25,31 @@ interface LocationSelectorProps {
   value: LocationValue;
   onChange: (value: LocationValue) => void;
 }
+
+interface CountryRecord {
+  name: string;
+  isoCode: string;
+}
+
+interface StateRecord {
+  name: string;
+  isoCode: string;
+}
+
+interface CityRecord {
+  name: string;
+}
+
+interface LocationDataset {
+  countries: CountryRecord[];
+  getStatesOfCountry: (countryIso: string) => StateRecord[];
+  getCitiesOfState: (countryIso: string, stateIso: string) => CityRecord[];
+}
+
+const EMPTY_COUNTRIES: CountryRecord[] = [];
+const EMPTY_STATES: StateRecord[] = [];
+const EMPTY_CITIES: string[] = [];
+const EMPTY_CITY_RECORDS: CityRecord[] = [];
 
 function ComboBox({
   label,
@@ -91,56 +115,86 @@ function ComboBox({
 }
 
 export function LocationSelector({ value, onChange }: LocationSelectorProps) {
-  const countries = useMemo(() => Country.getAllCountries(), []);
-  const selectedCountry = countries.find((country) => country.name === value.country);
+  const [dataset, setDataset] = useState<LocationDataset | null>(null);
+
+  useEffect(() => {
+    let active = true;
+
+    void import("country-state-city").then((module) => {
+      if (!active) {
+        return;
+      }
+
+      setDataset({
+        countries: module.Country.getAllCountries(),
+        getStatesOfCountry: module.State.getStatesOfCountry,
+        getCitiesOfState: module.City.getCitiesOfState,
+      });
+    });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const countries = useMemo(() => dataset?.countries ?? EMPTY_COUNTRIES, [dataset]);
+  const countryOptions = useMemo(() => countries.map((country) => country.name), [countries]);
+
+  const selectedCountry = useMemo(
+    () => countries.find((country) => country.name === value.country) ?? null,
+    [countries, value.country],
+  );
+
+  const stateRecords = useMemo(() => {
+    if (!selectedCountry) {
+      return EMPTY_STATES;
+    }
+
+    return dataset?.getStatesOfCountry(selectedCountry.isoCode) ?? EMPTY_STATES;
+  }, [dataset, selectedCountry]);
 
   const states = useMemo(() => {
-    if (!selectedCountry) {
-      return [] as string[];
-    }
-
-    return State.getStatesOfCountry(selectedCountry.isoCode).map((state) => state.name);
-  }, [selectedCountry]);
+    return stateRecords.map((state) => state.name);
+  }, [stateRecords]);
 
   const selectedState = useMemo(() => {
-    if (!selectedCountry) {
-      return null;
-    }
-
-    return State.getStatesOfCountry(selectedCountry.isoCode).find((state) => state.name === value.state) ?? null;
-  }, [selectedCountry, value.state]);
+    return stateRecords.find((state) => state.name === value.state) ?? null;
+  }, [stateRecords, value.state]);
 
   const cities = useMemo(() => {
     if (!selectedCountry || !selectedState) {
-      return [] as string[];
+      return EMPTY_CITIES;
     }
 
-    return City.getCitiesOfState(selectedCountry.isoCode, selectedState.isoCode).map((city) => city.name);
-  }, [selectedCountry, selectedState]);
+    return (dataset?.getCitiesOfState(selectedCountry.isoCode, selectedState.isoCode) ?? EMPTY_CITY_RECORDS).map((city) => city.name);
+  }, [dataset, selectedCountry, selectedState]);
+
+  const loading = dataset === null;
 
   return (
     <div className="grid gap-3 md:grid-cols-3">
       <ComboBox
         label="Country"
         value={value.country}
-        placeholder="Select country"
-        options={countries.map((country) => country.name)}
+        placeholder={loading ? "Loading countries..." : "Select country"}
+        options={countryOptions}
+        disabled={loading}
         onSelect={(country) => onChange({ country, state: "", city: "" })}
       />
       <ComboBox
         label="State"
         value={value.state}
-        placeholder={value.country ? "Select state" : "Select country first"}
+        placeholder={loading ? "Loading states..." : value.country ? "Select state" : "Select country first"}
         options={states}
-        disabled={!value.country}
+        disabled={loading || !value.country}
         onSelect={(state) => onChange({ ...value, state, city: "" })}
       />
       <ComboBox
         label="City"
         value={value.city}
-        placeholder={value.state ? "Select city" : "Select state first"}
+        placeholder={loading ? "Loading cities..." : value.state ? "Select city" : "Select state first"}
         options={cities}
-        disabled={!value.state}
+        disabled={loading || !value.state}
         onSelect={(city) => onChange({ ...value, city })}
       />
     </div>

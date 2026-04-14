@@ -92,6 +92,7 @@ export function RemarkTimeline({ restaurantId, initialRemarks }: RemarkTimelineP
             created_by: payload.new.created_by as string,
             content: payload.new.content as string,
             status_flag: payload.new.status_flag as RemarkWithProfile["status_flag"],
+            recall_scheduled_for: (payload.new.recall_scheduled_for as string | null) ?? null,
             created_at: payload.new.created_at as string,
             profiles: profile ?? null,
           };
@@ -172,6 +173,11 @@ export function RemarkTimeline({ restaurantId, initialRemarks }: RemarkTimelineP
                       ? parsed.note
                       : `Status updated: ${parsed.flags.map((flag) => flag.replaceAll("_", " ")).join(", ")}`}
                   </p>
+                  {remark.recall_scheduled_for ? (
+                    <p className="mt-2 text-xs text-zinc-500">
+                      Next recall: {new Date(remark.recall_scheduled_for).toISOString().slice(0, 10)}
+                    </p>
+                  ) : null}
                 </>
               );
             })()}

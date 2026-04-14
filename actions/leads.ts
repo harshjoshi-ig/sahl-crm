@@ -15,6 +15,12 @@ export interface ActionResult {
   error?: string;
 }
 
+export interface LeadLockResult extends ActionResult {
+  isLockedByAnotherUser?: boolean;
+  lockedByName?: string;
+  lockExpiresAt?: string;
+}
+
 export interface SearchAreaActionResult extends ActionResult {
   data?: AreaRestaurantCandidate[];
 }
@@ -131,8 +137,7 @@ export async function updateLead(leadId: string, input: LeadInput): Promise<Acti
       email: parsed.data.email || null,
       meeting_scheduled_at: parsed.data.meeting_scheduled_at?.toISOString() ?? null,
     })
-    .eq("id", leadId)
-    .eq("created_by", user.id);
+    .eq("id", leadId);
 
   if (error) {
     return { success: false, error: mapLeadError(error.message, error.code) };
@@ -166,8 +171,7 @@ export async function toggleMilestone(
   const { error } = await supabase
     .from("restaurants")
     .update({ [field]: value })
-    .eq("id", leadId)
-    .eq("created_by", user.id);
+    .eq("id", leadId);
 
   if (error) {
     return { success: false, error: mapLeadError(error.message, error.code) };
@@ -202,8 +206,7 @@ export async function setMeetingSchedule(
     .update({
       meeting_scheduled_at: meetingScheduledAt,
     })
-    .eq("id", leadId)
-    .eq("created_by", user.id);
+    .eq("id", leadId);
 
   if (error) {
     return { success: false, error: mapLeadError(error.message, error.code) };
@@ -211,6 +214,197 @@ export async function setMeetingSchedule(
 
   revalidatePath("/");
   revalidatePath(`/leads/${leadId}`);
+  return { success: true };
+}
+
+export async function acquireLeadLock(leadId: string): Promise<LeadLockResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+
+  if (authError || !user) {
+    return { success: false, error: "You must be signed in to open this lead" };
+  }
+
+  const { data: lead, error: leadError } = await supabase
+    .from("restaurants")
+    .select("locked_by, lock_expires_at")
+    .eq("id", leadId)
+    .single();
+
+  if (leadError || !lead) {
+    const message = leadError?.message ?? "Lead not found";
+    if (message.includes("column") && message.includes("locked_by")) {
+      return {
+        success: false,
+        error:
+          "Lead locking columns are missing. Run supabase/migrations/002_collaboration_locking.sql in Supabase SQL Editor.",
+      };
+    }
+
+    return { success: false, error: mapLeadError(message, leadError?.code) };
+  }
+
+  const now = Date.now();
+  const existingLockExpiresAt = lead.lock_expires_at ? new Date(lead.lock_expires_at).getTime() : 0;
+
+  if (lead.locked_by && lead.locked_by !== user.id && existingLockExpiresAt > now) {
+    const { data: lockProfile } = await supabase
+      .from("profiles")
+      .select("full_name")
+      .eq("id", lead.locked_by)
+      .single();
+
+    return {
+      success: false,
+      isLockedByAnotherUser: true,
+      error: "This lead is currently open by another user",
+      lockedByName: lockProfile?.full_name ?? "Another user",
+      lockExpiresAt: lead.lock_expires_at,
+    };
+  }
+
+  if (lead.locked_by === user.id && existingLockExpiresAt > now) {
+    return { success: true, lockExpiresAt: lead.lock_expires_at ?? undefined };
+  }
+
+  const nextExpire = new Date(now + 24 * 60 * 60 * 1000).toISOString();
+
+  const { error: releasePreviousError } = await supabase
+    .from("restaurants")
+    .update({ locked_by: null, lock_expires_at: null })
+    .eq("locked_by", user.id)
+    .neq("id", leadId);
+
+  if (releasePreviousError) {
+    return { success: false, error: mapLeadError(releasePreviousError.message, releasePreviousError.code) };
+  }
+
+  let { error: lockError } = await supabase
+    .from("restaurants")
+    .update({ locked_by: user.id, lock_expires_at: nextExpire })
+    .eq("id", leadId);
+
+  if (lockError?.code === "23503") {
+    const profileResult = await ensureProfile(supabase, user);
+    if (!profileResult.success) {
+      return profileResult;
+    }
+
+    const retry = await supabase
+      .from("restaurants")
+      .update({ locked_by: user.id, lock_expires_at: nextExpire })
+      .eq("id", leadId);
+    lockError = retry.error;
+  }
+
+  if (lockError) {
+    return { success: false, error: mapLeadError(lockError.message, lockError.code) };
+  }
+
+    const today = new Date().toISOString().slice(0, 10);
+    const { data: insertedEvent, error: eventError } = await supabase
+      .from("lead_take_events")
+      .insert({
+        lead_id: leadId,
+        user_id: user.id,
+        log_date: today,
+      })
+      .select("id");
+
+    if (eventError && eventError.code !== "23505") {
+      return { success: false, error: mapLeadError(eventError.message, eventError.code) };
+    }
+
+    if (insertedEvent && insertedEvent.length > 0) {
+      const { data: existingLog } = await supabase
+        .from("daily_lead_logs")
+        .select("id, leads_taken_count")
+        .eq("user_id", user.id)
+        .eq("log_date", today)
+        .maybeSingle();
+
+      if (existingLog) {
+        const { error: logUpdateError } = await supabase
+          .from("daily_lead_logs")
+          .update({
+            leads_taken_count: (existingLog.leads_taken_count ?? 0) + 1,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", existingLog.id);
+
+        if (logUpdateError) {
+          return { success: false, error: mapLeadError(logUpdateError.message, logUpdateError.code) };
+        }
+      } else {
+        const { error: logInsertError } = await supabase.from("daily_lead_logs").insert({
+          user_id: user.id,
+          log_date: today,
+          leads_taken_count: 1,
+        });
+
+        if (logInsertError) {
+          return { success: false, error: mapLeadError(logInsertError.message, logInsertError.code) };
+        }
+      }
+    }
+
+  return { success: true, lockExpiresAt: nextExpire };
+}
+
+export async function heartbeatLeadLock(leadId: string): Promise<ActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+
+  if (authError || !user) {
+    return { success: false, error: "You must be signed in" };
+  }
+
+  const nextExpire = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  const { data, error } = await supabase
+    .from("restaurants")
+    .update({ lock_expires_at: nextExpire })
+    .eq("id", leadId)
+    .eq("locked_by", user.id)
+    .select("id");
+
+  if (error) {
+    return { success: false, error: mapLeadError(error.message, error.code) };
+  }
+
+  if (!data || data.length === 0) {
+    return { success: false, error: "Lock no longer belongs to this user" };
+  }
+
+  return { success: true };
+}
+
+export async function releaseLeadLock(leadId: string): Promise<ActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+
+  if (authError || !user) {
+    return { success: false, error: "You must be signed in" };
+  }
+
+  const { error } = await supabase
+    .from("restaurants")
+    .update({ locked_by: null, lock_expires_at: null })
+    .eq("id", leadId)
+    .eq("locked_by", user.id);
+
+  if (error) {
+    return { success: false, error: mapLeadError(error.message, error.code) };
+  }
+
   return { success: true };
 }
 
@@ -235,7 +429,7 @@ export async function searchAreaRestaurants(input: {
     return { success: false, error: "Location is required" };
   }
 
-  const maxResults = Math.min(Math.max(input.maxResults ?? 25, 5), 100);
+  const maxResults = Math.min(Math.max(input.maxResults ?? 25, 5), 1000);
 
   try {
     const { data: existingLeads, error: existingError } = await supabase

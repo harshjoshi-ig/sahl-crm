@@ -304,24 +304,39 @@ export async function scrapeRestaurantsByArea({
   const candidates: AreaRestaurantCandidate[] = [];
   const dedupe = new Set<string>(excludeKeys ?? []);
 
-  for (const dataId of Array.from(allIds)) {
-    if (candidates.length >= maxResults) {
-      break;
-    }
+  const ids = Array.from(allIds);
+  const workerCount = Math.min(16, Math.max(4, Math.ceil(maxResults / 80)));
+  let cursor = 0;
 
-    const place = await fetchPlaceDetail(session, dataId, baseQuery);
-    if (!place || !place.name) {
-      continue;
-    }
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (true) {
+        if (candidates.length >= maxResults) {
+          return;
+        }
 
-    const key = makeLeadKey(place.name, place.phone_number);
-    if (dedupe.has(key)) {
-      continue;
-    }
+        const index = cursor;
+        cursor += 1;
+        if (index >= ids.length) {
+          return;
+        }
 
-    dedupe.add(key);
-    candidates.push(place);
-  }
+        const dataId = ids[index];
+        const place = await fetchPlaceDetail(session, dataId, baseQuery);
+        if (!place || !place.name) {
+          continue;
+        }
 
-  return candidates;
+        const key = makeLeadKey(place.name, place.phone_number);
+        if (dedupe.has(key)) {
+          continue;
+        }
+
+        dedupe.add(key);
+        candidates.push(place);
+      }
+    }),
+  );
+
+  return candidates.slice(0, maxResults);
 }

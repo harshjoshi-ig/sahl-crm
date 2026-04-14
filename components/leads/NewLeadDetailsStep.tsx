@@ -38,7 +38,7 @@ export function NewLeadDetailsStep({ country, state, city }: NewLeadDetailsStepP
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [searchQuery, setSearchQuery] = useState(`restaurants in ${city}`);
-  const [maxResults, setMaxResults] = useState(25);
+  const [maxResults, setMaxResults] = useState(100);
   const [candidates, setCandidates] = useState<AreaRestaurantCandidate[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
@@ -195,9 +195,13 @@ export function NewLeadDetailsStep({ country, state, city }: NewLeadDetailsStepP
             <Input
               type="number"
               min={5}
-              max={100}
+              max={1000}
               value={maxResults}
-              onChange={(event) => setMaxResults(Number(event.target.value || 25))}
+              onChange={(event) => {
+                const parsed = Number(event.target.value || 100);
+                const bounded = Math.min(Math.max(Number.isFinite(parsed) ? parsed : 100, 5), 1000);
+                setMaxResults(bounded);
+              }}
             />
             <Button type="button" onClick={handleAreaSearch} disabled={isPending}>
               {isPending ? "Searching..." : "Search Restaurants"}

@@ -59,8 +59,13 @@ export async function createRemark(
   restaurantId: string,
   content: string | undefined,
   flags: RemarkFlag[],
+  recallAt: string | null,
 ): Promise<ActionResult> {
-  const parsed = remarkSchema.safeParse({ content, status_flags: flags });
+  const parsed = remarkSchema.safeParse({
+    content,
+    status_flags: flags,
+    recall_at: recallAt ? new Date(recallAt) : null,
+  });
   if (!parsed.success) {
     return { success: false, error: parsed.error.issues[0]?.message ?? "Invalid remark" };
   }
@@ -84,11 +89,13 @@ export async function createRemark(
   const payload = JSON.stringify({ flags: parsed.data.status_flags, note });
   const primaryFlag =
     parsed.data.status_flags.length === 1 ? parsed.data.status_flags[0] : "custom";
+  const recallIso = parsed.data.recall_at ? parsed.data.recall_at.toISOString() : null;
 
   const { error: insertError } = await supabase.from("remarks").insert({
     restaurant_id: restaurantId,
     content: `__FLAGS__${payload}`,
     status_flag: primaryFlag,
+    recall_scheduled_for: recallIso,
     created_by: user.id,
   });
 
@@ -98,7 +105,14 @@ export async function createRemark(
 
   const { error: leadError } = await supabase
     .from("restaurants")
-    .update({ lead_status: parsed.data.status_flags[parsed.data.status_flags.length - 1] })
+    .update({
+      lead_status: parsed.data.status_flags[parsed.data.status_flags.length - 1],
+      last_remarked_at: new Date().toISOString(),
+      done_until: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      locked_by: null,
+      lock_expires_at: null,
+      next_recall_at: recallIso,
+    })
     .eq("id", restaurantId);
 
   if (leadError) {
