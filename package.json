@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "firebase:login": "npx firebase-tools login",
+    "firebase:use": "npx firebase-tools use --add",
+    "deploy:firebase": "npx firebase-tools deploy --only hosting"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
