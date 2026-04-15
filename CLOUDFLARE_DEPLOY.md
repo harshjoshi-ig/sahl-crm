@@ -45,6 +45,16 @@ npm run cf:deploy
 - Build command: `npx opennextjs-cloudflare build`
 - Deploy command: `npx opennextjs-cloudflare deploy`
 
+## 6) If using Cloudflare Pages build UI
+
+Use these exact values in Pages build settings:
+
+- Build command: `npm run cf:pages:build`
+- Build output directory: `.open-next/assets`
+
+The `cf:pages:build` script copies `.open-next/worker.js` to
+`.open-next/assets/_worker.js`, which Pages needs for SSR routing.
+
 ## Notes
 
 - For full stack SSR Next.js, Cloudflare recommends Workers-based deployment.

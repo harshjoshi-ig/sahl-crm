@@ -13,7 +13,8 @@
     "cf:preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
     "cf:deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
     "cf:upload": "opennextjs-cloudflare build && opennextjs-cloudflare upload",
-    "cf:typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts"
+    "cf:typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
+    "cf:pages:build": "opennextjs-cloudflare build && node -e \"const fs=require('fs');fs.copyFileSync('.open-next/worker.js','.open-next/assets/_worker.js');console.log('Copied .open-next/worker.js to .open-next/assets/_worker.js');\""
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
