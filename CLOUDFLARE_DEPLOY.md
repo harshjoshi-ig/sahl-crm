@@ -52,8 +52,9 @@ Use these exact values in Pages build settings:
 - Build command: `npm run cf:pages:build`
 - Build output directory: `.open-next/assets`
 
-The `cf:pages:build` script copies `.open-next/worker.js` to
-`.open-next/assets/_worker.js`, which Pages needs for SSR routing.
+The `cf:pages:build` script copies `.open-next/worker.js` and all required
+runtime directories (`cloudflare`, `middleware`, `server-functions`, `.build`)
+into `.open-next/assets`, which Pages needs for SSR routing.
 
 ## Notes
 
